@@ -1,63 +1,101 @@
-name: Oracle Database CI
+name: Oracle Database CI/CD
 
-on: 
+on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
 jobs:
-  database-manual:
+  database-service:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # Timeout extendido
-    permissions:
-      contents: read
-      packages: write
-      id-token: write  # Permisos para Docker
-
+    services:
+      oracle:
+        image: gvenzl/oracle-free:slim
+        env:
+          ORACLE_RANDOM_PASSWORD: y
+          APP_USER: ${{ secrets.DB_USER || 'test' }}
+          APP_USER_PASSWORD: ${{ secrets.DB_PASSWORD || 'test' }}
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v3
+      - uses: gvenzl/setup-oracle-sqlcl@v1
+      - name: Basic connection test
+        run: |
+          echo "SELECT 'Service Container: Connection successful at '||TO_CHAR(SYSDATE, 'HH24:MI:SS') FROM dual;" \
+          | sql ${{ secrets.DB_USER || 'test' }}/${{ secrets.DB_PASSWORD || 'test' }}@//localhost:1521/FREEPDB1
 
-      - name: Set up Docker container
+  database-manual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Verify directory structure
+        run: |
+          echo "=== Initial Structure ==="
+          ls -R
+          
+      - name: Start Oracle with Docker
         run: |
           docker run -d --name oracle_db \
           -p 1521:1521 \
           -e ORACLE_RANDOM_PASSWORD=y \
-          -e APP_USER=${{ secrets.DB_USER }} \
-          -e APP_USER_PASSWORD=${{ secrets.DB_PASSWORD }} \
+          -e APP_USER=${{ secrets.DB_USER || 'test' }} \
+          -e APP_USER_PASSWORD=${{ secrets.DB_PASSWORD || 'test' }} \
           -v ./datamodel:/container-entrypoint-initdb.d \
           gvenzl/oracle-free:slim
-          # Espera hasta que la BD esté lista
-          while ! docker logs oracle_db 2>&1 | grep -q "DATABASE IS READY TO USE"; do 
-            sleep 10; 
+          
+          echo "Waiting for database..."
+          while ! docker logs oracle_db 2>&1 | grep -q "DATABASE IS READY TO USE"; do
+            sleep 5;
+            echo "Still waiting...";
           done
-
-      - name: Install SQLcl
-        uses: gvenzl/setup-oracle-sqlcl@v1
-
-      - name: Test connection
+          
+      - uses: gvenzl/setup-oracle-sqlcl@v1
+      
+      - name: Test countries table
         run: |
-          echo "SELECT 'CONEXIÓN EXITOSA: '||TO_CHAR(SYSDATE, 'DD/MM/YYYY HH24:MI:SS') FROM dual;" \
-          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+          echo "SELECT 'Manual Container: '||COUNT(*)||' countries loaded' FROM countries;" \
+          | sql ${{ secrets.DB_USER || 'test' }}/${{ secrets.DB_PASSWORD || 'test' }}@//localhost:1521/FREEPDB1
+          
+      - name: Final verification
+        run: |
+          echo "=== Final Structure ==="
+          ls -R
+          docker ps -a
 
   database-action:
-    needs: database-manual  # Dependencia del primer job
+    needs: [database-service, database-manual]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
       - uses: actions/checkout@v3
-
-      - name: Set up Oracle (GitHub Action)
-        uses: gvenzl/setup-oracle-free@v1
-        with:
-          app-user: ${{ secrets.DB_USER }}
-          app-user-password: ${{ secrets.DB_PASSWORD }}
-          oracle-db-sid: FREEPDB1  # SID explícito
-          health-check-retries: 30  # Más intentos
-          health-interval: 10s     # Intervalo reducido
-
-      - name: Verify database
+      
+      - name: Create working directories
         run: |
-          echo "SELECT 'ESTADO: '||status||', VERSIÓN: '||version FROM v\$instance;" \
-          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+          mkdir -p ${{ github.workspace }}/database-files
+          ls -l
+          
+      - uses: gvenzl/setup-oracle-free@v1
+        with:
+          app-user: ${{ secrets.DB_USER || 'test' }}
+          app-user-password: ${{ secrets.DB_PASSWORD || 'test' }}
+          oracle-db-sid: FREEPDB1
+          volume: ${{ github.workspace }}/database-files
+          setup-scripts: ./datamodel
+          health-check-retries: 20
+          
+      - uses: gvenzl/setup-oracle-sqlcl@v1
+      
+      - name: Comprehensive test
+        run: |
+          echo "SELECT 'Action Setup: Database version '||version||', status '||status FROM v\$instance;
+              SELECT 'Tables count: '||COUNT(*) FROM user_tables;
+              SELECT 'Total records in countries: '||COUNT(*) FROM countries;" \
+          | sql ${{ secrets.DB_USER || 'test' }}/${{ secrets.DB_PASSWORD || 'test' }}@//localhost:1521/FREEPDB1
