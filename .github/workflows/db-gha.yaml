@@ -3,6 +3,7 @@ name: db-actions
 on: push
 
 jobs:
+  # Parte 1: Base con servicio Oracle y SQLcl
   database-via-gha-service:
     runs-on: ubuntu-latest
     services:
@@ -10,8 +11,8 @@ jobs:
         image: gvenzl/oracle-free:slim
         env:
           ORACLE_RANDOM_PASSWORD: y
-          APP_USER: test
-          APP_USER_PASSWORD: test
+          APP_USER: ${{ secrets.DB_USER }}
+          APP_USER_PASSWORD: ${{ secrets.DB_PASSWORD }}
         ports:
           - 1521:1521
         options: >-
@@ -22,6 +23,50 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: gvenzl/setup-oracle-sqlcl@v1
-      - name: Run SQLcl
+      - name: Run SQLcl (Parte 1)
         run: |
-          echo "SELECT 'Hey there, hey UCEVA!';" | sql test/test@localhost/FREEPDB1
+          echo "SELECT 'Hey there, hey UCEVA!';" | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+
+  # Parte 2: Usando podman y montando scripts desde ./datamodel
+  database-manual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Ensure datamodel directory exists
+        run: mkdir -p ./datamodel
+      - name: Setup test database with podman
+        run: |
+          podman run -d --name oracle \
+                     -p 1521:1521 \
+                     -e ORACLE_RANDOM_PASSWORD=y \
+                     -e APP_USER=${{ secrets.DB_USER }} \
+                     -e APP_USER_PASSWORD=${{ secrets.DB_PASSWORD }} \
+                     -v ./datamodel:/container-entrypoint-initdb.d \
+                     gvenzl/oracle-free:slim
+          while [[ $(podman logs oracle 2>&1 | grep -c "DATABASE IS READY TO USE") == 0 ]]; do
+            sleep 1;
+          done;
+      - uses: gvenzl/setup-oracle-sqlcl@v1
+      - name: Run SQLcl (Parte 2)
+        run: |
+          echo "SELECT country_code, official_name, population FROM countries WHERE name = 'Austria';" \
+          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+
+  # Parte 3: Usando setup-oracle-free y setup-oracle-sqlcl
+  database-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: mkdir -p ${{ github.workspace }}/database-files
+      - run: mkdir -p ./datamodel
+      - uses: gvenzl/setup-oracle-free@v1
+        with:
+          app-user: ${{ secrets.DB_USER }}
+          app-user-password: ${{ secrets.DB_PASSWORD }}
+          volume: ${{ github.workspace }}/database-files
+          setup-scripts: ./datamodel
+      - uses: gvenzl/setup-oracle-sqlcl@v1
+      - name: Run SQLcl (Parte 3)
+        run: |
+          echo "SELECT country_code, official_name, population FROM countries WHERE name = 'Austria';" \
+          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
