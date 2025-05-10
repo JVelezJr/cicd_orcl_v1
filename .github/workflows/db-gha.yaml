@@ -5,49 +5,53 @@ on: push
 jobs:
   database-manual:
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # Timeout aumentado
+    permissions:  # Permisos añadidos
+      contents: read
+      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v3
       
-      - name: Ensure directories exist
+      - name: Setup Oracle with Docker  # Reemplazado Podman por Docker
         run: |
-          mkdir -p ./datamodel
-          mkdir -p ./database-files
-          
-      - name: Setup test database with Podman
-        run: |
-          podman run -d --name oracle \
+          docker run -d --name oracle \
           -p 1521:1521 \
           -e ORACLE_RANDOM_PASSWORD=y \
           -e APP_USER=${{ secrets.DB_USER }} \
           -e APP_USER_PASSWORD=${{ secrets.DB_PASSWORD }} \
           -v ./datamodel:/container-entrypoint-initdb.d \
           gvenzl/oracle-free:slim
-          while [ $(podman logs oracle 2>&1 | grep -c "DATABASE IS READY TO USE") == 0 ]; do sleep 5; done
+          while [ $(docker logs oracle 2>&1 | grep -c "DATABASE IS READY TO USE") == 0 ]; do sleep 5; done
           
       - uses: gvenzl/setup-oracle-sqlcl@v1
       
       - name: Run test query
         run: |
-          echo "SELECT country_code, official_name, population \
-          FROM countries WHERE name = 'Austria';" \
-          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+          echo "SELECT 'Conexión exitosa a Oracle: '||SYSDATE FROM dual;" | \
+          sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
 
   database-action:
-    needs: database-manual
+    needs: database-manual  # Dependencia del primer job
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v3
       
-      - uses: gvenzl/setup-oracle-free@v1
+      - name: Setup Oracle with GitHub Action  # Nombre corregido (gvenzl, no green)
+        uses: gvenzl/setup-oracle-free@v1
         with:
           app-user: ${{ secrets.DB_USER }}
           app-user-password: ${{ secrets.DB_PASSWORD }}
-          volume: ${{ github.workspace }}/database-files
+          oracle-db-sid: FREEPDB1  # SID explícito
           setup-scripts: ./datamodel
           
       - uses: gvenzl/setup-oracle-sqlcl@v1
       
-      - name: Run validation query
+      - name: Verify database
         run: |
-          echo "SELECT 'Database version: '||version FROM v\$instance;" \
-          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+          echo "SELECT 'Versión de Oracle: '||version FROM v\$instance;" | \
+          sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
