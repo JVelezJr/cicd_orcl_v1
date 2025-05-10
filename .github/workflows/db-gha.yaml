@@ -1,105 +1,72 @@
-name: Oracle Database CI/CD Pipeline
+name: db-actions
 
-on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+on: push
 
 jobs:
-  database-service:
+  # Parte 1: Base con servicio Oracle y SQLcl
+  database-via-gha-service:
     runs-on: ubuntu-latest
     services:
       oracle:
         image: gvenzl/oracle-free:slim
         env:
           ORACLE_RANDOM_PASSWORD: y
-          APP_USER: test 
-          APP_USER_PASSWORD: test123  
+          APP_USER: ${{ secrets.DB_USER }}
+          APP_USER_PASSWORD: ${{ secrets.DB_PASSWORD }}
         ports:
           - 1521:1521
         options: >-
           --health-cmd healthcheck.sh
-          --health-interval 15s
-          --health-timeout 10s
-          --health-retries 20
-          --name oracle-service-container
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v3
       - uses: gvenzl/setup-oracle-sqlcl@v1
-      - name: Test Basic Connection
+      - name: Run SQLcl (Parte 1)
         run: |
-          echo "SELECT 'Servicio Oracle: Conexión exitosa con test/test123' FROM dual;" \
-          | sql test/test123@//localhost:1521/FREEPDB1
+          echo "SELECT 'Hey there, hey UCEVA!';" | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
 
+  # Parte 2: Usando podman y montando scripts desde ./datamodel
   database-manual:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v3
-      
-      - name: Verify Directory Structure
+      - name: Ensure datamodel directory exists
+        run: mkdir -p ./datamodel
+      - name: Setup test database with podman
         run: |
-          echo "=== Estructura Inicial ==="
-          ls -R
-          
-      - name: Start Oracle Container
-        run: |
-          docker run -d --name oracle_manual \
-          -p 1521:1521 \
-          -e ORACLE_RANDOM_PASSWORD=y \
-          -e APP_USER=test \
-          -e APP_USER_PASSWORD=test123 \
-          -v ./datamodel:/container-entrypoint-initdb.d \
-          gvenzl/oracle-free:slim
-          
-          echo "Esperando inicialización de Oracle..."
-          while ! docker logs oracle_manual 2>&1 | grep -q "DATABASE IS READY TO USE"; do
-            sleep 5;
-            echo "Todavía iniciando...";
-          done
-          
+          podman run -d --name oracle \
+                     -p 1521:1521 \
+                     -e ORACLE_RANDOM_PASSWORD=y \
+                     -e APP_USER=${{ secrets.DB_USER }} \
+                     -e APP_USER_PASSWORD=${{ secrets.DB_PASSWORD }} \
+                     -v ./datamodel:/container-entrypoint-initdb.d \
+                     gvenzl/oracle-free:slim
+          while [[ $(podman logs oracle 2>&1 | grep -c "DATABASE IS READY TO USE") == 0 ]]; do
+            sleep 1;
+          done;
       - uses: gvenzl/setup-oracle-sqlcl@v1
-      
-      - name: Test Countries Query
+      - name: Run SQLcl (Parte 2)
         run: |
-          echo "SELECT 'País: '||official_name||', Población: '||population \
-          FROM countries WHERE name = 'Austria';" \
-          | sql test/test123@//localhost:1521/FREEPDB1
-          
-      - name: Final Verification
-        run: |
-          echo "=== Estructura Final ==="
-          ls -R
-          docker ps -a
+          echo "SELECT country_code, official_name, population FROM countries WHERE name = 'Austria';" \
+          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
 
+  # Parte 3: Usando setup-oracle-free y setup-oracle-sqlcl
   database-action:
-    needs: [database-service, database-manual]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
-      - name: Prepare Directories
-        run: |
-          mkdir -p ${{ github.workspace }}/database-files
-          echo "Directorios creados:"
-          ls -l
-          
+      - run: mkdir -p ${{ github.workspace }}/database-files
+      - run: mkdir -p ./datamodel
       - uses: gvenzl/setup-oracle-free@v1
         with:
-          app-user: test
-          app-user-password: test123
-          oracle-db-sid: FREEPDB1
+          app-user: ${{ secrets.DB_USER }}
+          app-user-password: ${{ secrets.DB_PASSWORD }}
           volume: ${{ github.workspace }}/database-files
           setup-scripts: ./datamodel
-          health-check-retries: 25
-          health-interval: 10s
-          
       - uses: gvenzl/setup-oracle-sqlcl@v1
-      
-      - name: Comprehensive Test
+      - name: Run SQLcl (Parte 3)
         run: |
-          echo "SELECT 'Configuración Action: Usuario=test, Contraseña=test123' FROM dual;
-                SELECT 'Estado: '||status||', Versión: '||version FROM v\$instance;
-                SELECT 'Total países: '||COUNT(*) FROM countries;" \
-          | sql test/test123@//localhost:1521/FREEPDB1
+          echo "SELECT country_code, official_name, population FROM countries WHERE name = 'Austria';" \
+          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
