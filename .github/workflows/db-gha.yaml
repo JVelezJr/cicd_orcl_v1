@@ -1,94 +1,105 @@
-name: db-actions
+name: Oracle Database CI/CD Pipeline
+
 on:
   push:
-    branches:
-    - main
+    branches: [ "main" ]
   pull_request:
-    branches:
-    - main
+    branches: [ "main" ]
+
 jobs:
-  database-via-gha-service:
+  database-service:
     runs-on: ubuntu-latest
     services:
-      # Label used to access the service container
       oracle:
-        # Container registry image
         image: gvenzl/oracle-free:slim
-        # Provide environment variables to the container
         env:
           ORACLE_RANDOM_PASSWORD: y
-          APP_USER: test
-          APP_USER_PASSWORD: test
-        # Forward Oracle port
+          APP_USER: test 
+          APP_USER_PASSWORD: test123  
         ports:
           - 1521:1521
-        # Provide healthcheck script options for startup
         options: >-
           --health-cmd healthcheck.sh
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+          --health-interval 15s
+          --health-timeout 10s
+          --health-retries 20
+          --name oracle-service-container
     steps:
       - uses: actions/checkout@v3
-      # At this point, your app would connect to the database and use it
-      # Here we are showing the availability of the DB via the SQLcl CLI
       - uses: gvenzl/setup-oracle-sqlcl@v1
-      # Connect to the database and run a SQL command
-      - name: Run SQLcl
+      - name: Test Basic Connection
         run: |
-          echo "SELECT 'Hey there, hey UCEVA!';" | sql test/test@localhost/FREEPDB1
+          echo "SELECT 'Servicio Oracle: Conexión exitosa con test/test123' FROM dual;" \
+          | sql test/test123@//localhost:1521/FREEPDB1
 
   database-manual:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v3
-      - name: Initial dir stucture
+      
+      - name: Verify Directory Structure
         run: |
-          echo "Seeing root dir"
-          ls -al
-          echo "Seeing datamodel"
-          ls -al datamodel
-      - name: Setup test database
+          echo "=== Estructura Inicial ==="
+          ls -R
+          
+      - name: Start Oracle Container
         run: |
-          podman run -d --name oracle \
-                     -p 1521:1521 \
-                     -e ORACLE_RANDOM_PASSWORD=y \
-                     -e APP_USER=test \
-                     -e APP_USER_PASSWORD=test123 \
-                     -v ./datamodel:/container-entrypoint-initdb.d \
-                     gvenzl/oracle-free:slim
-          while [[ $(podman logs oracle 2>&1 | grep -c "DATABASE IS READY TO USE") == 0 ]]; do
-            sleep 1;
-          done;
+          docker run -d --name oracle_manual \
+          -p 1521:1521 \
+          -e ORACLE_RANDOM_PASSWORD=y \
+          -e APP_USER=test \
+          -e APP_USER_PASSWORD=test123 \
+          -v ./datamodel:/container-entrypoint-initdb.d \
+          gvenzl/oracle-free:slim
+          
+          echo "Esperando inicialización de Oracle..."
+          while ! docker logs oracle_manual 2>&1 | grep -q "DATABASE IS READY TO USE"; do
+            sleep 5;
+            echo "Todavía iniciando...";
+          done
+          
       - uses: gvenzl/setup-oracle-sqlcl@v1
-      # Connect to the database and run a SQL command
-      - name: Run SQLcl
+      
+      - name: Test Countries Query
         run: |
-          echo "SELECT country_code, official_name, population \
+          echo "SELECT 'País: '||official_name||', Población: '||population \
           FROM countries WHERE name = 'Austria';" \
-          | sql test/test@localhost/FREEPDB1
-      - name: Final dir stucture
+          | sql test/test123@//localhost:1521/FREEPDB1
+          
+      - name: Final Verification
         run: |
-          echo "Seeing root dir"
-          ls -al
-          echo "Seeing datamodel"
-          ls -al datamodel
+          echo "=== Estructura Final ==="
+          ls -R
+          docker ps -a
 
   database-action:
+    needs: [database-service, database-manual]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: mkdir ${{ github.workspace }}/database-files
+      
+      - name: Prepare Directories
+        run: |
+          mkdir -p ${{ github.workspace }}/database-files
+          echo "Directorios creados:"
+          ls -l
+          
       - uses: gvenzl/setup-oracle-free@v1
         with:
           app-user: test
-          app-user-password: test
+          app-user-password: test123
+          oracle-db-sid: FREEPDB1
           volume: ${{ github.workspace }}/database-files
           setup-scripts: ./datamodel
+          health-check-retries: 25
+          health-interval: 10s
+          
       - uses: gvenzl/setup-oracle-sqlcl@v1
-      # Connect to the database and run a SQL command
-      - name: Run SQLcl
+      
+      - name: Comprehensive Test
         run: |
-          echo "SELECT country_code, official_name, population \
-          FROM countries WHERE name = 'Austria';" \
-          | sql test/test@localhost/FREEPDB1
+          echo "SELECT 'Configuración Action: Usuario=test, Contraseña=test123' FROM dual;
+                SELECT 'Estado: '||status||', Versión: '||version FROM v\$instance;
+                SELECT 'Total países: '||COUNT(*) FROM countries;" \
+          | sql test/test123@//localhost:1521/FREEPDB1
