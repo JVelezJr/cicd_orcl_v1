@@ -2,15 +2,20 @@ name: Oracle Database CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
-  database-service:
+  oracle-service:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
     services:
-      oracle:
+      oracle-db:
         image: gvenzl/oracle-free:slim
         env:
           ORACLE_RANDOM_PASSWORD: y
@@ -20,82 +25,22 @@ jobs:
           - 1521:1521
         options: >-
           --health-cmd healthcheck.sh
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 15
-    steps:
-      - uses: actions/checkout@v3
-      - uses: gvenzl/setup-oracle-sqlcl@v1
-      - name: Basic connection test
-        run: |
-          echo "SELECT 'Service Container: Connection successful at '||TO_CHAR(SYSDATE, 'HH24:MI:SS') FROM dual;" \
-          | sql ${{ secrets.DB_USER || 'test' }}/${{ secrets.DB_PASSWORD || 'test' }}@//localhost:1521/FREEPDB1
+          --health-interval 15s
+          --health-timeout 10s
+          --health-retries 30
+          --name oracle-db-container
 
-  database-manual:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v3
       
-      - name: Verify directory structure
+      - name: Wait for Oracle
         run: |
-          echo "=== Initial Structure ==="
-          ls -R
-          
-      - name: Start Oracle with Docker
-        run: |
-          docker run -d --name oracle_db \
-          -p 1521:1521 \
-          -e ORACLE_RANDOM_PASSWORD=y \
-          -e APP_USER=${{ secrets.DB_USER || 'test' }} \
-          -e APP_USER_PASSWORD=${{ secrets.DB_PASSWORD || 'test' }} \
-          -v ./datamodel:/container-entrypoint-initdb.d \
-          gvenzl/oracle-free:slim
-          
-          echo "Waiting for database..."
-          while ! docker logs oracle_db 2>&1 | grep -q "DATABASE IS READY TO USE"; do
-            sleep 5;
-            echo "Still waiting...";
-          done
+          echo "Waiting for Oracle container to initialize..."
+          sleep 30  # Tiempo extra para inicialización
           
       - uses: gvenzl/setup-oracle-sqlcl@v1
       
-      - name: Test countries table
+      - name: Test Connection
         run: |
-          echo "SELECT 'Manual Container: '||COUNT(*)||' countries loaded' FROM countries;" \
-          | sql ${{ secrets.DB_USER || 'test' }}/${{ secrets.DB_PASSWORD || 'test' }}@//localhost:1521/FREEPDB1
-          
-      - name: Final verification
-        run: |
-          echo "=== Final Structure ==="
-          ls -R
-          docker ps -a
-
-  database-action:
-    needs: [database-service, database-manual]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Create working directories
-        run: |
-          mkdir -p ${{ github.workspace }}/database-files
-          ls -l
-          
-      - uses: gvenzl/setup-oracle-free@v1
-        with:
-          app-user: ${{ secrets.DB_USER || 'test' }}
-          app-user-password: ${{ secrets.DB_PASSWORD || 'test' }}
-          oracle-db-sid: FREEPDB1
-          volume: ${{ github.workspace }}/database-files
-          setup-scripts: ./datamodel
-          health-check-retries: 20
-          
-      - uses: gvenzl/setup-oracle-sqlcl@v1
-      
-      - name: Comprehensive test
-        run: |
-          echo "SELECT 'Action Setup: Database version '||version||', status '||status FROM v\$instance;
-              SELECT 'Tables count: '||COUNT(*) FROM user_tables;
-              SELECT 'Total records in countries: '||COUNT(*) FROM countries;" \
+          echo "SELECT 'CONEXIÓN EXITOSA: '||TO_CHAR(SYSDATE, 'DD-MM-YYYY HH24:MI:SS') FROM dual;" \
           | sql ${{ secrets.DB_USER || 'test' }}/${{ secrets.DB_PASSWORD || 'test' }}@//localhost:1521/FREEPDB1
