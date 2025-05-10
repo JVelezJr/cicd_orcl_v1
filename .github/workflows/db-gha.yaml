@@ -1,57 +1,63 @@
 name: Oracle Database CI
 
-on: push
+on: 
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   database-manual:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # Timeout aumentado
-    permissions:  # Permisos añadidos
+    timeout-minutes: 15  # Timeout extendido
+    permissions:
       contents: read
       packages: write
-      id-token: write
+      id-token: write  # Permisos para Docker
+
     steps:
       - uses: actions/checkout@v3
-      
-      - name: Setup Oracle with Docker  # Reemplazado Podman por Docker
+
+      - name: Set up Docker container
         run: |
-          docker run -d --name oracle \
+          docker run -d --name oracle_db \
           -p 1521:1521 \
           -e ORACLE_RANDOM_PASSWORD=y \
           -e APP_USER=${{ secrets.DB_USER }} \
           -e APP_USER_PASSWORD=${{ secrets.DB_PASSWORD }} \
           -v ./datamodel:/container-entrypoint-initdb.d \
           gvenzl/oracle-free:slim
-          while [ $(docker logs oracle 2>&1 | grep -c "DATABASE IS READY TO USE") == 0 ]; do sleep 5; done
-          
-      - uses: gvenzl/setup-oracle-sqlcl@v1
-      
-      - name: Run test query
+          # Espera hasta que la BD esté lista
+          while ! docker logs oracle_db 2>&1 | grep -q "DATABASE IS READY TO USE"; do 
+            sleep 10; 
+          done
+
+      - name: Install SQLcl
+        uses: gvenzl/setup-oracle-sqlcl@v1
+
+      - name: Test connection
         run: |
-          echo "SELECT 'Conexión exitosa a Oracle: '||SYSDATE FROM dual;" | \
-          sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+          echo "SELECT 'CONEXIÓN EXITOSA: '||TO_CHAR(SYSDATE, 'DD/MM/YYYY HH24:MI:SS') FROM dual;" \
+          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
 
   database-action:
     needs: database-manual  # Dependencia del primer job
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
+    timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v3
-      
-      - name: Setup Oracle with GitHub Action  # Nombre corregido (gvenzl, no green)
+
+      - name: Set up Oracle (GitHub Action)
         uses: gvenzl/setup-oracle-free@v1
         with:
           app-user: ${{ secrets.DB_USER }}
           app-user-password: ${{ secrets.DB_PASSWORD }}
           oracle-db-sid: FREEPDB1  # SID explícito
-          setup-scripts: ./datamodel
-          
-      - uses: gvenzl/setup-oracle-sqlcl@v1
-      
+          health-check-retries: 30  # Más intentos
+          health-interval: 10s     # Intervalo reducido
+
       - name: Verify database
         run: |
-          echo "SELECT 'Versión de Oracle: '||version FROM v\$instance;" | \
-          sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
+          echo "SELECT 'ESTADO: '||status||', VERSIÓN: '||version FROM v\$instance;" \
+          | sql ${{ secrets.DB_USER }}/${{ secrets.DB_PASSWORD }}@localhost/FREEPDB1
